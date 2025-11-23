@@ -1,0 +1,1096 @@
+repeat task.wait() until game:IsLoaded()
+
+getgenv().cfg = {
+    Version = "1.9",
+    ESP = {Enabled = false, Box = false, Name = false, Distance = false, Health = false, Weapon = false, TeamCheck = false, RefreshRate = 0.05, MaxDistance = 0},
+    Aimbot = {Enabled = false, KeybindType = "Key", KeybindValue = Enum.KeyCode.E, TargetPart = "Head", FOV = 100, Sensitivity = 65, TeamCheck = false, Predict = false, PredictionValue = 0.13, Wallcheck = false, ShowFOV = false, MaxDistance = 0},
+    Misc = {Fullbright = false, Noclip = false, JumpHeight = 50, WalkSpeed = 16, FieldOfView = 70},
+    Colors = {
+        ESP_Visible = {R = 255, G = 255, B = 255},
+        ESP_Team = {R = 0, G = 255, B = 100},
+        Weapon = {R = 200, G = 200, B = 200},
+        Health = {R = 255, G = 255, B = 255},
+        FOV_Idle = {R = 255, G = 255, B = 255},
+        FOV_Triggered = {R = 255, G = 50, B = 50}
+    }
+}
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Camera = workspace.CurrentCamera
+local Lighting = game:GetService("Lighting")
+local LocalPlayer = Players.LocalPlayer
+
+local lastPos = {}
+local lastTick = {}
+local espObjects = {}
+local lastEspUpdate = 0
+local noclipConnection = nil
+local originalLighting = nil
+
+local fovCircle = Drawing.new("Circle")
+fovCircle.Color = Color3.fromRGB(255, 255, 255)
+fovCircle.Thickness = 1
+fovCircle.NumSides = 100
+fovCircle.Filled = false
+fovCircle.Transparency = 0.8
+fovCircle.Visible = false
+
+local function getRootPart(char)
+    return char:FindFirstChild("HumanoidRootPart")
+        or char:FindFirstChild("LowerTorso")
+        or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChild("Torso")
+        or char.PrimaryPart
+end
+
+local function getLocalRoot()
+    if LocalPlayer.Character then
+        return getRootPart(LocalPlayer.Character)
+    end
+end
+
+local function setFullbright(enabled)
+    if not originalLighting then
+        originalLighting = {
+            Brightness = Lighting.Brightness,
+            GlobalShadows = Lighting.GlobalShadows,
+            FogEnd = Lighting.FogEnd,
+            ClockTime = Lighting.ClockTime
+        }
+    end
+
+    local targetProps
+    if enabled then
+        print("BvG - Minimal :: Fullbright enabled")
+        targetProps = {
+            Brightness = 3, 
+            GlobalShadows = false, 
+            FogEnd = 100000, 
+            ClockTime = 14
+        }
+    else
+        print("BvG - Minimal :: Fullbright disabled")
+        targetProps = originalLighting
+    end
+    
+    pcall(function()
+        TweenService:Create(Lighting, TweenInfo.new(0.5), targetProps):Play()
+    end)
+end
+
+local function setNoclip(enabled)
+    if enabled then
+        if noclipConnection then noclipConnection:Disconnect() end
+        print("BvG - Minimal :: Noclip enabled")
+        noclipConnection = RunService.Stepped:Connect(function()
+            pcall(function()
+                if LocalPlayer.Character then
+                    for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            part.CanCollide = false
+                        end
+                    end
+                end
+            end)
+        end)
+    else
+        if noclipConnection then
+            print("BvG - Minimal :: Noclip disabled")
+            noclipConnection:Disconnect()
+            noclipConnection = nil
+        end
+    end
+end
+
+local function removeESP_by_UserId(userId)
+    if espObjects[userId] then
+        print("BvG - Minimal :: Removing ESP for UserId " .. tostring(userId))
+        pcall(function()
+            for k, v in pairs(espObjects[userId]) do
+                if typeof(v) == "Instance" then
+                    v:Remove()
+                end
+            end
+            espObjects[userId] = nil
+        end)
+    end
+end
+
+local function removeESP(plr)
+    if plr then
+        removeESP_by_UserId(plr.UserId)
+    end
+end
+
+local function createESP(plr)
+    if plr == LocalPlayer or espObjects[plr.UserId] then return end
+    
+    local box = Drawing.new("Square")
+    box.Thickness = 1; box.Filled = false; box.Transparency = 1; box.Visible = false
+    
+    local name = Drawing.new("Text")
+    name.Size = 14; name.Font = 2; name.Center = true; name.Outline = true; name.Visible = false
+    
+    local health = Drawing.new("Text")
+    health.Size = 12; health.Font = 2; name.Outline = true; health.Center = true; health.Visible = false
+    
+    local weapon = Drawing.new("Text")
+    weapon.Size = 12; weapon.Font = 2; weapon.Outline = true; weapon.Center = true; weapon.Visible = false
+    
+    local hum, head
+    if plr.Character then
+        hum = plr.Character:FindFirstChildOfClass("Humanoid")
+        head = plr.Character:FindFirstChild("Head")
+    end
+    
+    espObjects[plr.UserId] = {
+        box = box, 
+        name = name, 
+        health = health, 
+        weapon = weapon,
+        visible = false,
+        playerObj = plr,
+        humanoid = hum,
+        headPart = head
+    }
+end
+
+local function reloadESP()
+    print("BvG - Minimal :: Reloading ESP...")
+    
+    for userId, obj in pairs(espObjects) do
+        pcall(function()
+            if obj.box then obj.box:Remove() end
+            if obj.name then obj.name:Remove() end
+            if obj.health then obj.health:Remove() end
+            if obj.weapon then obj.weapon:Remove() end
+        end)
+    end
+    
+    espObjects = {}
+    
+    for _, p in Players:GetPlayers() do 
+        if p ~= LocalPlayer then 
+            createESP(p) 
+        end 
+    end
+    print("BvG - Minimal :: ESP Reloaded.")
+end
+
+local function refreshScript()
+    print("BvG - Minimal :: Refreshing script functions...")
+    reloadESP()
+    
+    pcall(function()
+        setFullbright(getgenv().cfg.Misc.Fullbright)
+        
+        setNoclip(false)
+        setNoclip(getgenv().cfg.Misc.Noclip)
+        
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+            LocalPlayer.Character.Humanoid.WalkSpeed = getgenv().cfg.Misc.WalkSpeed
+            LocalPlayer.Character.Humanoid.JumpPower = getgenv().cfg.Misc.JumpHeight
+        end
+    end)
+    print("BvG - Minimal :: Script refreshed.")
+end
+
+local function getClosest()
+    local mousePos = UserInputService:GetMouseLocation()
+    local closest, shortest = nil, getgenv().cfg.Aimbot.FOV
+    local now = tick()
+
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+
+    local localRoot = getLocalRoot()
+    if not localRoot then return nil end
+
+    for userId, obj in pairs(espObjects) do
+        local plr = obj.playerObj
+        if not plr or not plr.Character or not plr.Parent then continue end 
+        if getgenv().cfg.Aimbot.TeamCheck and plr.Team == LocalPlayer.Team then continue end
+
+        local hum = obj.humanoid
+        if not hum or not hum.Parent or hum.Health <= 0 then continue end
+        
+        local root = getRootPart(plr.Character)
+        if not root then continue end
+        
+        local dist = (localRoot.Position - root.Position).Magnitude
+        if getgenv().cfg.Aimbot.MaxDistance > 0 and dist > getgenv().cfg.Aimbot.MaxDistance then
+            continue
+        end
+        
+        local part = plr.Character:FindFirstChild(getgenv().cfg.Aimbot.TargetPart) or obj.headPart
+        if not part or not part.Parent then continue end
+        
+        local curPos = part.Position
+        local prevPos = lastPos[plr.UserId]
+        local prevTime = lastTick[plr.UserId] or now
+        
+        local vel = Vector3.new()
+        if prevPos and (now - prevTime) > 0 then
+             vel = (curPos - prevPos) / (now - prevTime)
+        end
+        lastPos[plr.UserId] = curPos
+        lastTick[plr.UserId] = now
+
+        local predictPos = curPos
+        if getgenv().cfg.Aimbot.Predict and vel.Magnitude < 120 and vel.Magnitude > 0.1 then
+            predictPos += vel * getgenv().cfg.Aimbot.PredictionValue
+        end
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(predictPos)
+        if onScreen then
+            
+            if getgenv().cfg.Aimbot.Wallcheck then
+                local origin = Camera.CFrame.Position
+                local direction = (predictPos - origin)
+                raycastParams.FilterDescendantsInstances = {LocalPlayer.Character}
+                
+                local result = workspace:Raycast(origin, direction, raycastParams)
+                
+                if result and result.Instance and not result.Instance:IsDescendantOf(plr.Character) then
+                    continue 
+                end
+            end
+            
+            local dist2D = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+            if dist2D < shortest then
+                shortest = dist2D
+                closest = plr
+            end
+        end
+    end
+    return closest
+end
+
+-- ### PĘTLA RENDEROWANIA (TANIE OPERACJE) ###
+local mainRenderStepped = RunService.RenderStepped:Connect(function(deltaTime)
+    
+    local cfg = getgenv().cfg
+    local aimCfg = cfg.Aimbot
+    
+    fovCircle.Position = UserInputService:GetMouseLocation()
+    fovCircle.Radius = aimCfg.FOV
+    fovCircle.Visible = aimCfg.Enabled and aimCfg.ShowFOV
+    local aimbotTriggered = false
+
+    pcall(function()
+        if LocalPlayer.Character then
+            local hum = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if hum and Camera.CameraSubject ~= hum and not cfg.Misc.Spectate then
+                 Camera.CameraSubject = hum 
+            end
+        end
+    end)
+
+    -- ### Pętla renderowania ESP (Tylko pozycje 3D->2D) ###
+    local cfgESP = cfg.ESP
+    if cfgESP.Enabled then
+        for userId, obj in pairs(espObjects) do
+            if not obj.visible or not obj.playerObj or not obj.playerObj.Character then
+                obj.box.Visible = false
+                obj.name.Visible = false
+                obj.health.Visible = false
+                obj.weapon.Visible = false
+                continue 
+            end
+            
+            local root = getRootPart(obj.playerObj.Character)
+            local head = obj.headPart
+            
+            if not root or not head then
+                obj.box.Visible = false
+                obj.name.Visible = false
+                obj.health.Visible = false
+                obj.weapon.Visible = false
+                continue
+            end
+            
+            local rootPos, headPos, feetPos
+            local onScreen = false
+            
+            local success, err = pcall(function()
+                rootPos = Camera:WorldToViewportPoint(root.Position)
+                headPos = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+                feetPos = Camera:WorldToViewportPoint(root.Position - Vector3.new(0, 4.5, 0))
+                onScreen = headPos.Z > 0 and feetPos.Z > 0 and rootPos.Z > 0
+            end)
+            
+            if not success or not onScreen then
+                obj.box.Visible = false
+                obj.name.Visible = false
+                obj.health.Visible = false
+                obj.weapon.Visible = false
+                continue
+            end
+            
+            local h = math.abs(headPos.Y - feetPos.Y) * 1.1
+            h = h < 8 and 8 or h
+            local w = h * 0.6
+            
+            obj.box.Position = Vector2.new(rootPos.X - w/2, headPos.Y)
+            obj.box.Size = Vector2.new(w, h)
+            obj.name.Position = Vector2.new(rootPos.X, headPos.Y - 20)
+            obj.health.Position = Vector2.new(rootPos.X, feetPos.Y + 5)
+            obj.weapon.Position = Vector2.new(rootPos.X, feetPos.Y + 18)
+            
+            obj.box.Visible = cfgESP.Box
+            obj.name.Visible = (cfgESP.Name or cfgESP.Distance)
+            obj.health.Visible = cfgESP.Health
+            obj.weapon.Visible = cfgESP.Weapon and obj.weapon.Text ~= ""
+        end
+    end
+    
+    -- ### Pętla Aimbota ###
+    local isAiming = false
+    if aimCfg.KeybindType == "Key" then
+        isAiming = UserInputService:IsKeyDown(aimCfg.KeybindValue)
+    elseif aimCfg.KeybindType == "Mouse" then
+        isAiming = UserInputService:IsMouseButtonDown(aimCfg.KeybindValue)
+    end
+
+    if aimCfg.Enabled and isAiming then
+        local target = getClosest()
+        if target and target.Character then
+            
+            local partToAimAt = target.Character:FindFirstChild(aimCfg.TargetPart) or target.Character:FindFirstChild("Head")
+
+            if partToAimAt then
+                aimbotTriggered = true
+                local curPos = partToAimAt.Position
+                local vel = Vector3.new()
+                if lastPos[target.UserId] and lastTick[target.UserId] and (tick() - lastTick[target.UserId]) > 0 then
+                    vel = (curPos - lastPos[target.UserId]) / (tick() - lastTick[target.UserId])
+                end
+                
+                local predictPos = curPos
+                if aimCfg.Predict and vel.Magnitude < 120 and vel.Magnitude > 0.1 then
+                    predictPos = (curPos + vel * aimCfg.PredictionValue)
+                end
+
+                pcall(function()
+                    local targetCFrame = CFrame.new(Camera.CFrame.Position, predictPos)
+                    local sensitivity = aimCfg.Sensitivity
+                    local smoothFactor = 1 - (sensitivity / 100)
+                    local correctedSmooth = 1 - (smoothFactor ^ (deltaTime * 60))
+                    Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, correctedSmooth)
+                end)
+            end
+        end
+    end
+    
+    if aimbotTriggered then
+        fovCircle.Color = Color3.fromRGB(cfg.Colors.FOV_Triggered.R, cfg.Colors.FOV_Triggered.G, cfg.Colors.FOV_Triggered.B)
+    else
+        fovCircle.Color = Color3.fromRGB(cfg.Colors.FOV_Idle.R, cfg.Colors.FOV_Idle.G, cfg.Colors.FOV_Idle.B)
+    end
+    
+end)
+
+-- ### PĘTLA AKTUALIZACJI DANYCH (DROGIE OPERACJE) ###
+local dataUpdateConnection = RunService.Heartbeat:Connect(function()
+    
+    local now = tick()
+    local cfg = getgenv().cfg
+    local cfgESP = cfg.ESP
+    
+    if (now - lastEspUpdate) > cfgESP.RefreshRate then
+        
+        local playersInGame = Players:GetPlayers()
+        local playerSet = {}
+        for _, p in ipairs(playersInGame) do
+            playerSet[p.UserId] = true
+        end
+
+        for userId, obj in pairs(espObjects) do
+            if not playerSet[userId] then
+                print("BvG - Minimal :: Found and removed ghost ESP for UserId " .. (userId or "Unknown"))
+                removeESP_by_UserId(userId)
+            end
+        end
+
+        for userId, obj in pairs(espObjects) do
+            local plr = obj.playerObj
+            
+            if not plr or not plr.Parent or not plr.Character then
+                removeESP_by_UserId(userId)
+                continue
+            end
+            
+            local root = getRootPart(plr.Character)
+            local hum = obj.humanoid
+            local head = obj.headPart
+
+            if not hum or not hum.Parent then
+                obj.humanoid = plr.Character:FindFirstChildOfClass("Humanoid")
+                hum = obj.humanoid
+            end
+            
+            if not head or not head.Parent then
+                obj.headPart = plr.Character:FindFirstChild("Head")
+                head = obj.headPart
+            end
+
+            if not root or not hum or hum.Health <= 0 or not head then
+                if obj.visible then obj.visible = false end
+                if not hum or hum.Health <= 0 then
+                    removeESP_by_UserId(userId)
+                end
+                continue
+            end
+            
+            local localRoot = getLocalRoot()
+            if not localRoot then continue end
+
+            local dist = (localRoot.Position - root.Position).Magnitude
+            
+            if cfgESP.MaxDistance > 0 and dist > cfgESP.MaxDistance then
+                if obj.visible then obj.visible = false end
+                continue
+            end
+
+            if cfgESP.Enabled then
+                obj.visible = true
+                
+                local teamCol
+                if cfgESP.TeamCheck and plr.Team == LocalPlayer.Team then
+                    teamCol = Color3.fromRGB(cfg.Colors.ESP_Team.R, cfg.Colors.ESP_Team.G, cfg.Colors.ESP_Team.B)
+                else
+                    teamCol = Color3.fromRGB(cfg.Colors.ESP_Visible.R, cfg.Colors.ESP_Visible.G, cfg.Colors.ESP_Visible.B)
+                end
+                
+                obj.box.Color = teamCol
+                
+                if cfgESP.Name or cfgESP.Distance then
+                    local txt = cfgESP.Name and plr.DisplayName or ""
+                    if cfgESP.Distance then txt ..= (txt ~= "" and " | " or "") .. math.floor(dist) .. "m" end
+                    obj.name.Text = txt
+                    obj.name.Color = teamCol
+                end
+
+                if cfgESP.Health then
+                    obj.health.Text = math.floor(hum.Health) .. " HP"
+                    obj.health.Color = Color3.fromRGB(cfg.Colors.Health.R, cfg.Colors.Health.G, cfg.Colors.Health.B)
+                end
+                
+                if cfgESP.Weapon then
+                    local tool = plr.Character:FindFirstChildOfClass("Tool")
+                    if tool then
+                        obj.weapon.Text = tool.Name
+                        obj.weapon.Color = Color3.fromRGB(cfg.Colors.Weapon.R, cfg.Colors.Weapon.G, cfg.Colors.Weapon.B)
+                    else
+                        obj.weapon.Text = ""
+                    end
+                end
+                
+            elseif obj.visible then
+                obj.visible = false
+            end
+        end
+        lastEspUpdate = now
+    end
+end)
+
+
+local playerAddedConn = Players.PlayerAdded:Connect(createESP)
+local playerRemovingConn = Players.PlayerRemoving:Connect(removeESP)
+for _, p in Players:GetPlayers() do if p ~= LocalPlayer then createESP(p) end end
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "BvG_GUI_Minimal"
+ScreenGui.Parent = game:GetService("CoreGui")
+ScreenGui.ResetOnSpawn = false
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 540, 0, 460)
+MainFrame.Position = UDim2.new(0.5, -270, 0.5, -230)
+MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+MainFrame.BackgroundTransparency = 0.1
+MainFrame.BorderColor3 = Color3.fromRGB(255, 255, 255)
+MainFrame.BorderSizePixel = 1
+MainFrame.ClipsDescendants = true
+MainFrame.Visible = false
+MainFrame.Parent = ScreenGui
+
+local Header = Instance.new("Frame")
+Header.Size = UDim2.new(1, 0, 0, 40)
+Header.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+Header.BorderColor3 = Color3.fromRGB(255, 255, 255)
+Header.BorderSizePixel = 1
+Header.Parent = MainFrame
+
+local DragDet = Instance.new("DragDetector")
+DragDet.Parent = Header
+DragDet.DragStyle = Enum.DragDetectorDragStyle.TranslateViewPlane
+DragDet.ReferenceInstance = MainFrame
+
+local Title = Instance.new("TextLabel")
+Title.Text = "BvG - Minimal v" .. getgenv().cfg.Version
+Title.Size = UDim2.new(1, -100, 1, 0)
+Title.Position = UDim2.new(0, 15, 0, 0)
+Title.BackgroundTransparency = 1
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 18
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Header
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size = UDim2.new(0, 25, 0, 25)
+CloseBtn.Position = UDim2.new(1, -33, 0.5, -12.5)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(150, 0, 0)
+CloseBtn.BorderColor3 = Color3.fromRGB(255, 255, 255)
+CloseBtn.BorderSizePixel = 1
+CloseBtn.Text = "X"
+CloseBtn.TextColor3 = Color3.new(1,1,1)
+CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.Parent = Header
+
+local TabContainer = Instance.new("Frame")
+TabContainer.Size = UDim2.new(1, -20, 0, 35)
+TabContainer.Position = UDim2.new(0, 10, 0, 50)
+TabContainer.BackgroundTransparency = 1
+TabContainer.Parent = MainFrame
+local TabLayout = Instance.new("UIListLayout", TabContainer)
+TabLayout.FillDirection = Enum.FillDirection.Horizontal
+TabLayout.Padding = UDim.new(0, 5)
+TabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+
+local ContentContainer = Instance.new("Frame")
+ContentContainer.Size = UDim2.new(1, -20, 1, -105)
+ContentContainer.Position = UDim2.new(0, 10, 0, 95)
+ContentContainer.BackgroundTransparency = 1
+ContentContainer.Parent = MainFrame
+
+local function createScrollingFrame(name)
+    local frame = Instance.new("ScrollingFrame")
+    frame.Size = UDim2.new(1,0,1,0)
+    frame.BackgroundTransparency = 1
+    frame.ScrollBarThickness = 6
+    frame.ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255)
+    frame.CanvasSize = UDim2.new(0,0,0,0)
+    frame.Parent = ContentContainer
+    frame.Name = name
+    frame.BorderColor3 = Color3.fromRGB(255, 255, 255)
+    frame.BorderSizePixel = 1
+    frame.Visible = false
+    
+    local padding = Instance.new("UIPadding", frame)
+    padding.PaddingLeft = UDim.new(0, 10)
+    padding.PaddingRight = UDim.new(0, 10)
+    padding.PaddingTop = UDim.new(0, 10)
+    padding.PaddingBottom = UDim.new(0, 10)
+    
+    Instance.new("UIListLayout", frame).Padding = UDim.new(0, 10)
+    return frame
+end
+
+local AimbotFrame = createScrollingFrame("Aimbot")
+local ESPFrame = createScrollingFrame("ESP")
+local MovementFrame = createScrollingFrame("Movement")
+local MiscFrame = createScrollingFrame("Misc")
+local ColorsFrame = createScrollingFrame("Colors")
+local MenuFrame = createScrollingFrame("Menu")
+
+AimbotFrame.Visible = true
+local Pages = {AimbotFrame, ESPFrame, MovementFrame, MiscFrame, ColorsFrame, MenuFrame}
+
+local activeTabColor = Color3.fromRGB(255, 255, 255)
+local inactiveTabColor = Color3.fromRGB(30, 30, 30)
+local activeTextColor = Color3.fromRGB(0, 0, 0)
+local inactiveTextColor = Color3.fromRGB(255, 255, 255)
+local borderColor = Color3.fromRGB(255, 255, 255)
+
+local function createTab(name)
+    local Btn = Instance.new("TextButton")
+    Btn.Size = UDim2.new(0.155, 0, 1, 0)
+    Btn.BackgroundColor3 = (name == "Aimbot") and activeTabColor or inactiveTabColor
+    Btn.Text = name
+    Btn.TextColor3 = (name == "Aimbot") and activeTextColor or inactiveTextColor
+    Btn.Font = Enum.Font.GothamBold
+    Btn.TextScaled = true
+    Btn.BorderColor3 = borderColor
+    Btn.BorderSizePixel = 1
+    Btn.Parent = TabContainer
+
+    Btn.MouseButton1Click:Connect(function()
+        for _, page in pairs(Pages) do
+            page.Visible = (page.Name == name)
+        end
+        for _, tab in pairs(TabContainer:GetChildren()) do
+            if tab:IsA("TextButton") then
+                tab.BackgroundColor3 = (tab.Text == name) and activeTabColor or inactiveTabColor
+                tab.TextColor3 = (tab.Text == name) and activeTextColor or inactiveTextColor
+            end
+        end
+    end)
+end
+
+createTab("Aimbot")
+createTab("ESP")
+createTab("Movement")
+createTab("Misc")
+createTab("Colors")
+createTab("Menu")
+
+CloseBtn.MouseButton1Click:Connect(function() MainFrame.Visible = false end)
+
+local function createSeparator(parentFrame)
+    local Line = Instance.new("Frame")
+    Line.Size = UDim2.new(1, 0, 0, 1)
+    Line.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    Line.BackgroundTransparency = 0.5
+    Line.BorderSizePixel = 0
+    Line.Parent = parentFrame
+    parentFrame.CanvasSize = parentFrame.CanvasSize + UDim2.new(0,0,0,11)
+end
+
+local function createToggle(parentFrame, name, default, callback)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(1,0,0,30)
+    Frame.BackgroundTransparency = 1
+    Frame.Parent = parentFrame
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(0.7, -10, 1, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = name
+    Label.TextColor3 = Color3.new(1,1,1)
+    Label.Font = Enum.Font.Gotham
+    Label.TextScaled = true
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Frame
+
+    local Btn = Instance.new("TextButton")
+    Btn.Size = UDim2.new(0.3, 0, 1, 0)
+    Btn.Position = UDim2.new(0.7, 0, 0, 0)
+    Btn.BackgroundColor3 = default and activeTabColor or inactiveTabColor
+    Btn.Text = default and "ON" or "OFF"
+    Btn.TextColor3 = default and activeTextColor or inactiveTextColor
+    Btn.Font = Enum.Font.GothamBold
+    Btn.TextScaled = true
+    Btn.BorderColor3 = borderColor
+    Btn.BorderSizePixel = 1
+    Btn.Parent = Frame
+
+    Btn.MouseButton1Click:Connect(function()
+        default = not default
+        Btn.Text = default and "ON" or "OFF"
+        Btn.BackgroundColor3 = default and activeTabColor or inactiveTabColor
+        Btn.TextColor3 = default and activeTextColor or inactiveTextColor
+        print("BvG - Minimal :: " .. name .. " set to " .. tostring(default))
+        pcall(callback, default)
+    end)
+
+    parentFrame.CanvasSize = parentFrame.CanvasSize + UDim2.new(0,0,0,40)
+end
+
+local function createSlider(parentFrame, name, min, max, default, suffix, callback)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(1,0,0,50)
+    Frame.BackgroundTransparency = 1
+    Frame.Parent = parentFrame
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1,0,0,20)
+    Label.BackgroundTransparency = 1
+    Label.Text = name .. ": " .. default .. suffix
+    Label.TextColor3 = Color3.new(1,1,1)
+    Label.Font = Enum.Font.Gotham
+    Label.TextScaled = true
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Frame
+
+    local Track = Instance.new("Frame")
+    Track.Size = UDim2.new(1,0,0,10)
+    Track.Position = UDim2.new(0,0,0,25)
+    Track.BackgroundColor3 = inactiveTabColor
+    Track.BorderColor3 = borderColor
+    Track.BorderSizePixel = 1
+    Track.Parent = Frame
+
+    local Fill = Instance.new("Frame")
+    Fill.Size = UDim2.new((default-min)/(max-min),0,1,0)
+    Fill.BackgroundColor3 = activeTabColor
+    Fill.BorderSizePixel = 0
+    Fill.Parent = Track
+
+    local Knob = Instance.new("TextButton")
+    Knob.Size = UDim2.new(0,16,0,16)
+    Knob.Position = UDim2.new((default-min)/(max-min),-8,0.5,-8)
+    Knob.BackgroundColor3 = activeTabColor
+    Knob.BorderColor3 = borderColor
+    Knob.BorderSizePixel = 1
+    Knob.Text = ""
+    Knob.Parent = Track
+
+    local draggingSlider = false
+    
+    local function updateSlider(inputPos)
+        local rel = math.clamp((inputPos.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
+        local val = min + (max - min) * rel
+        local finalVal = math.floor(val)
+        
+        Fill.Size = UDim2.new(rel,0,1,0)
+        Knob.Position = UDim2.new(rel,-8,0.5,-8)
+        Label.Text = name .. ": " .. finalVal .. suffix
+        pcall(callback, finalVal)
+    end
+    
+    local function printSliderValue(inputPos)
+        local rel = math.clamp((inputPos.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X, 0, 1)
+        local val = min + (max - min) * rel
+        print("BvG - Minimal :: " .. name .. " set to " .. math.floor(val))
+    end
+
+    Knob.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then draggingSlider = true end end)
+    Knob.InputEnded:Connect(function(i) 
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then 
+            draggingSlider = false
+            printSliderValue(i.Position)
+        end 
+    end)
+    
+    UserInputService.InputChanged:Connect(function(i)
+        if draggingSlider and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+            updateSlider(i.Position)
+        end
+    end)
+    
+    Track.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 then
+            updateSlider(i.Position)
+            printSliderValue(i.Position)
+        end
+    end)
+
+    parentFrame.CanvasSize = parentFrame.CanvasSize + UDim2.new(0,0,0,60)
+end
+
+local function createKeybind(parentFrame, name, defaultType, defaultValue, callback)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(1,0,0,30)
+    Frame.BackgroundTransparency = 1
+    Frame.Parent = parentFrame
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(0.7, -10, 1, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = name
+    Label.TextColor3 = Color3.new(1,1,1)
+    Label.Font = Enum.Font.Gotham
+    Label.TextScaled = true
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Frame
+
+    local Btn = Instance.new("TextButton")
+    Btn.Size = UDim2.new(0.3, 0, 1, 0)
+    Btn.Position = UDim2.new(0.7, 0, 0, 0)
+    Btn.BackgroundColor3 = inactiveTabColor
+    
+    if defaultType == "Key" then
+        Btn.Text = defaultValue.Name
+    elseif defaultType == "Mouse" then
+        Btn.Text = defaultValue.Name:gsub("MouseButton", "MB")
+        if Btn.Text == "MB2" then Btn.Text = "RMB" end
+        if Btn.Text == "MB1" then Btn.Text = "LMB" end
+    end
+    
+    Btn.TextColor3 = inactiveTextColor
+    Btn.Font = Enum.Font.GothamBold
+    Btn.TextScaled = true
+    Btn.BorderColor3 = borderColor
+    Btn.BorderSizePixel = 1
+    Btn.Parent = Frame
+
+    local binding = false
+    Btn.MouseButton1Click:Connect(function()
+        if binding then return end 
+        Btn.Text = "..."
+        binding = true
+        
+        local conn
+        conn = UserInputService.InputBegan:Connect(function(i,gpe)
+            if not gpe and binding then
+                
+                local newType, newVal, newName
+                
+                if i.KeyCode ~= Enum.KeyCode.Unknown and i.KeyCode ~= Enum.KeyCode.Insert then
+                    newType, newVal, newName = "Key", i.KeyCode, i.KeyCode.Name
+                elseif i.UserInputType == Enum.UserInputType.MouseButton2 then
+                    newType, newVal, newName = "Mouse", Enum.UserInputType.MouseButton2, "RMB"
+                elseif i.UserInputType == Enum.UserInputType.MouseButton1 then
+                    newType, newVal, newName = "Mouse", Enum.UserInputType.MouseButton1, "LMB"
+                end
+                
+                if newType then
+                    pcall(callback, newType, newVal)
+                    Btn.Text = newName
+                    print("BvG - Minimal :: " .. name .. " set to " .. newName)
+                    binding = false
+                    conn:Disconnect()
+                end
+            end
+        end)
+    end)
+
+    parentFrame.CanvasSize = parentFrame.CanvasSize + UDim2.new(0,0,0,40)
+end
+
+local function createDropdown(parentFrame, name, options, default, callback)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(1, 0, 0, 30)
+    Frame.BackgroundTransparency = 1
+    Frame.Parent = parentFrame
+    Frame.ZIndex = 2
+
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(0.7, -10, 1, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = name
+    Label.TextColor3 = Color3.new(1,1,1)
+    Label.Font = Enum.Font.Gotham
+    Label.TextScaled = true
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Frame
+
+    local MainButton = Instance.new("TextButton")
+    MainButton.Size = UDim2.new(0.3, 0, 1, 0)
+    MainButton.Position = UDim2.new(0.7, 0, 0, 0)
+    MainButton.BackgroundColor3 = inactiveTabColor
+    MainButton.Text = default
+    MainButton.TextColor3 = inactiveTextColor
+    MainButton.Font = Enum.Font.GothamBold
+    MainButton.TextScaled = true
+    MainButton.BorderColor3 = borderColor
+    MainButton.BorderSizePixel = 1
+    MainButton.Parent = Frame
+    MainButton.ZIndex = 3
+
+    local DropdownList = Instance.new("ScrollingFrame")
+    DropdownList.Size = UDim2.new(0.3, 0, 0, #options * 30 + 10)
+    DropdownList.Position = UDim2.new(0.7, 0, 1, 0)
+    DropdownList.BackgroundColor3 = inactiveTabColor
+    DropdownList.BorderColor3 = borderColor
+    DropdownList.BorderSizePixel = 1
+    DropdownList.Visible = false
+    DropdownList.Parent = Frame
+    DropdownList.ScrollBarThickness = 6
+    DropdownList.ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255)
+    DropdownList.ZIndex = 4
+    Instance.new("UIListLayout", DropdownList).Padding = UDim.new(0, 5)
+    local listPadding = Instance.new("UIPadding", DropdownList)
+    listPadding.PaddingLeft = UDim.new(0, 5)
+    listPadding.PaddingRight = UDim.new(0, 5)
+    listPadding.PaddingTop = UDim.new(0, 5)
+    listPadding.PaddingBottom = UDim.new(0, 5)
+
+    MainButton.MouseButton1Click:Connect(function()
+        DropdownList.Visible = not DropdownList.Visible
+    end)
+
+    for _, optionName in ipairs(options) do
+        local OptionButton = Instance.new("TextButton")
+        OptionButton.Size = UDim2.new(1, 0, 0, 25)
+        OptionButton.BackgroundColor3 = inactiveTabColor
+        OptionButton.Text = optionName
+        OptionButton.TextColor3 = inactiveTextColor
+        OptionButton.Font = Enum.Font.Gotham
+        OptionButton.TextScaled = true
+        OptionButton.Parent = DropdownList
+        
+        OptionButton.MouseEnter:Connect(function() OptionButton.BackgroundColor3 = Color3.fromRGB(60,60,60) end)
+        OptionButton.MouseLeave:Connect(function() OptionButton.BackgroundColor3 = inactiveTabColor end)
+
+        OptionButton.MouseButton1Click:Connect(function()
+            MainButton.Text = optionName
+            DropdownList.Visible = false
+            pcall(callback, optionName)
+            print("BvG - Minimal :: " .. name .. " set to " .. optionName)
+        end)
+    end
+
+    parentFrame.CanvasSize = parentFrame.CanvasSize + UDim2.new(0,0,0,40)
+end
+
+local function createButton(parentFrame, name, callback)
+    local Frame = Instance.new("Frame")
+    Frame.Size = UDim2.new(1,0,0,30)
+    Frame.BackgroundTransparency = 1
+    Frame.Parent = parentFrame
+    
+    local Btn = Instance.new("TextButton")
+    Btn.Size = UDim2.new(1, 0, 1, 0)
+    Btn.BackgroundColor3 = inactiveTabColor
+    Btn.Text = name
+    Btn.TextColor3 = inactiveTextColor
+    Btn.Font = Enum.Font.GothamBold
+    Btn.TextScaled = true
+    Btn.BorderColor3 = borderColor
+    Btn.BorderSizePixel = 1
+    Btn.Parent = Frame
+    
+    Btn.MouseButton1Click:Connect(function()
+        pcall(callback)
+        print("BvG - Minimal :: Button '" .. name .. "' clicked.")
+    end)
+    
+    parentFrame.CanvasSize = parentFrame.CanvasSize + UDim2.new(0,0,0,40)
+end
+
+local function createColorSliders(parentFrame, name, configTable)
+    local TitleFrame = Instance.new("Frame")
+    TitleFrame.Size = UDim2.new(1, 0, 0, 30)
+    TitleFrame.BackgroundTransparency = 1
+    TitleFrame.Parent = parentFrame
+    parentFrame.CanvasSize = parentFrame.CanvasSize + UDim2.new(0,0,0,40)
+
+    local Label = Instance.new("TextLabel", TitleFrame)
+    Label.Size = UDim2.new(0.7, -40, 1, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = name
+    Label.TextColor3 = Color3.new(1,1,1)
+    Label.Font = Enum.Font.Gotham
+    Label.TextScaled = true
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+
+    local Preview = Instance.new("Frame", TitleFrame)
+    Preview.Size = UDim2.new(0, 28, 0, 28)
+    Preview.Position = UDim2.new(1, -28, 0, 1)
+    Preview.BackgroundColor3 = Color3.fromRGB(configTable.R, configTable.G, configTable.B)
+    Preview.BorderColor3 = borderColor
+    Preview.BorderSizePixel = 1
+    
+    createSlider(parentFrame, "Red", 0, 255, configTable.R, "", function(v) 
+        configTable.R = v 
+        Preview.BackgroundColor3 = Color3.fromRGB(v, configTable.G, configTable.B) 
+    end)
+    createSlider(parentFrame, "Green", 0, 255, configTable.G, "", function(v) 
+        configTable.G = v 
+        Preview.BackgroundColor3 = Color3.fromRGB(configTable.R, v, configTable.B) 
+    end)
+    createSlider(parentFrame, "Blue", 0, 255, configTable.B, "", function(v) 
+        configTable.B = v 
+        Preview.BackgroundColor3 = Color3.fromRGB(configTable.R, configTable.G, v) 
+    end)
+    
+    createSeparator(parentFrame)
+end
+
+
+-- === Tworzenie zakładek ===
+
+-- Aimbot
+createToggle(AimbotFrame, "Aimbot Enabled", getgenv().cfg.Aimbot.Enabled, function(v) getgenv().cfg.Aimbot.Enabled = v; fovCircle.Visible = v end)
+createKeybind(AimbotFrame, "Aimbot Key", getgenv().cfg.Aimbot.KeybindType, getgenv().cfg.Aimbot.KeybindValue, function(kType, kValue) getgenv().cfg.Aimbot.KeybindType = kType; getgenv().cfg.Aimbot.KeybindValue = kValue; end)
+createSeparator(AimbotFrame)
+createSlider(AimbotFrame, "FOV", 10, 500, getgenv().cfg.Aimbot.FOV, "", function(v) getgenv().cfg.Aimbot.FOV = v end)
+createSlider(AimbotFrame, "Sensitivity", 1, 100, getgenv().cfg.Aimbot.Sensitivity, "", function(v) getgenv().cfg.Aimbot.Sensitivity = v end)
+createSlider(AimbotFrame, "Prediction", 0, 250, getgenv().cfg.Aimbot.PredictionValue * 1000, "ms", function(v) getgenv().cfg.Aimbot.PredictionValue = v / 1000 end)
+createSeparator(AimbotFrame)
+
+local aimbotParts = {"Head", "HumanoidRootPart", "Left Arm", "Right Arm"}
+createDropdown(AimbotFrame, "Target Part", aimbotParts, getgenv().cfg.Aimbot.TargetPart, function(v) getgenv().cfg.Aimbot.TargetPart = v end)
+
+createToggle(AimbotFrame, "Prediction", getgenv().cfg.Aimbot.Predict, function(v) getgenv().cfg.Aimbot.Predict = v end)
+createToggle(AimbotFrame, "Wallcheck", getgenv().cfg.Aimbot.Wallcheck, function(v) getgenv().cfg.Aimbot.Wallcheck = v end)
+createToggle(AimbotFrame, "Aimbot Team Check", getgenv().cfg.Aimbot.TeamCheck, function(v) getgenv().cfg.Aimbot.TeamCheck = v end)
+createToggle(AimbotFrame, "Show FOV Circle", getgenv().cfg.Aimbot.ShowFOV, function(v) getgenv().cfg.Aimbot.ShowFOV = v end)
+createSlider(AimbotFrame, "Max Distance", 0, 2000, getgenv().cfg.Aimbot.MaxDistance, "m", function(v) getgenv().cfg.Aimbot.MaxDistance = v end)
+
+-- ESP
+createToggle(ESPFrame, "ESP Enabled", getgenv().cfg.ESP.Enabled, function(v) getgenv().cfg.ESP.Enabled = v end)
+createSeparator(ESPFrame)
+createToggle(ESPFrame, "Box ESP", getgenv().cfg.ESP.Box, function(v) getgenv().cfg.ESP.Box = v end)
+createToggle(ESPFrame, "Name ESP", getgenv().cfg.ESP.Name, function(v) getgenv().cfg.ESP.Name = v end)
+createToggle(ESPFrame, "Distance ESP", getgenv().cfg.ESP.Distance, function(v) getgenv().cfg.ESP.Distance = v end)
+createToggle(ESPFrame, "Health ESP", getgenv().cfg.ESP.Health, function(v) getgenv().cfg.ESP.Health = v end)
+createToggle(ESPFrame, "Weapon ESP", getgenv().cfg.ESP.Weapon, function(v) getgenv().cfg.ESP.Weapon = v end)
+createSeparator(ESPFrame)
+createToggle(ESPFrame, "ESP Team Check", getgenv().cfg.ESP.TeamCheck, function(v) getgenv().cfg.ESP.TeamCheck = v end)
+createSlider(ESPFrame, "ESP Refresh", 0, 500, getgenv().cfg.ESP.RefreshRate * 1000, "ms", function(v) getgenv().cfg.ESP.RefreshRate = v / 1000 end)
+createSlider(ESPFrame, "Max Distance", 0, 2000, getgenv().cfg.ESP.MaxDistance, "m", function(v) getgenv().cfg.ESP.MaxDistance = v end)
+createSeparator(ESPFrame)
+createButton(ESPFrame, "Reload ESP", reloadESP)
+
+-- Movement
+createToggle(MovementFrame, "Noclip", getgenv().cfg.Misc.Noclip, function(v) getgenv().cfg.Misc.Noclip = v; setNoclip(v) end)
+createSeparator(MovementFrame)
+createSlider(MovementFrame, "Walk Speed", 16, 100, getgenv().cfg.Misc.WalkSpeed, "", function(v) 
+    getgenv().cfg.Misc.WalkSpeed = v
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+        LocalPlayer.Character.Humanoid.WalkSpeed = v
+    end
+end)
+createSlider(MovementFrame, "Jump Height", 50, 250, getgenv().cfg.Misc.JumpHeight, "", function(v) 
+    getgenv().cfg.Misc.JumpHeight = v
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+        LocalPlayer.Character.Humanoid.JumpPower = v
+    end
+end)
+
+-- Misc
+createToggle(MiscFrame, "Fullbright", getgenv().cfg.Misc.Fullbright, function(v) getgenv().cfg.Misc.Fullbright = v; setFullbright(v) end)
+createSeparator(MiscFrame)
+createSlider(MiscFrame, "Field of View", 70, 120, getgenv().cfg.Misc.FieldOfView, "", function(v) 
+    getgenv().cfg.Misc.FieldOfView = v
+    pcall(function() Camera.FieldOfView = v end)
+end)
+
+-- Colors
+createColorSliders(ColorsFrame, "ESP Visible", getgenv().cfg.Colors.ESP_Visible)
+createColorSliders(ColorsFrame, "ESP Team", getgenv().cfg.Colors.ESP_Team)
+createColorSliders(ColorsFrame, "Health Text", getgenv().cfg.Colors.Health)
+createColorSliders(ColorsFrame, "Weapon Text", getgenv().cfg.Colors.Weapon)
+createColorSliders(ColorsFrame, "FOV Idle", getgenv().cfg.Colors.FOV_Idle)
+createColorSliders(ColorsFrame, "FOV Triggered", getgenv().cfg.Colors.FOV_Triggered)
+
+-- Menu
+local function cleanup()
+    print("BvG - Minimal :: Destroying script...")
+    pcall(function()
+        mainRenderStepped:Disconnect()
+        dataUpdateConnection:Disconnect()
+        playerAddedConn:Disconnect()
+        playerRemovingConn:Disconnect()
+        inputBeganConn:Disconnect()
+        if noclipConnection then noclipConnection:Disconnect() end
+        
+        for plrId, _ in pairs(espObjects) do
+            removeESP_by_UserId(plrId)
+        end
+        
+        fovCircle:Remove()
+        ScreenGui:Destroy()
+        
+        if getgenv().cfg.Misc.Fullbright then
+            setFullbright(false)
+        end
+        
+        pcall(function() Camera.FieldOfView = 70 end)
+        
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+            LocalPlayer.Character.Humanoid.WalkSpeed = 16
+            LocalPlayer.Character.Humanoid.JumpPower = 50
+        end
+    end)
+    print("BvG - Minimal :: Script destroyed.")
+end
+
+createButton(MenuFrame, "Refresh Script", refreshScript)
+createButton(MenuFrame, "Destroy Script", cleanup)
+
+-- Input
+local inputBeganConn = UserInputService.InputBegan:Connect(function(i,gpe)
+    if not gpe and i.KeyCode == Enum.KeyCode.Insert then
+        MainFrame.Visible = not MainFrame.Visible
+    end
+end)
+
+print("BvG - Minimal v" .. getgenv().cfg.Version .. " :: Loaded. Press INSERT.")
